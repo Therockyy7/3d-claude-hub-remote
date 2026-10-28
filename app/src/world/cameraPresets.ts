@@ -13,10 +13,11 @@ export const CAMERA_PRESETS: Record<CameraPresetId, CameraPreset> = {
   hub: { id: "hub", label: "Operations Hub", position: [0.6, 7.2, 9.6], target: [0, 1, -2.4] },
   development: { id: "development", label: "Development", position: [8.2, 6.2, 5.6], target: [8.25, 0.6, -2.8] },
   research: { id: "research", label: "Research", position: [-8.2, 6.2, 5.6], target: [-8.25, 0.6, -2.8] },
-  collaboration: { id: "collaboration", label: "Collaboration", position: [-3.2, 8.4, 15], target: [-6.8, 0.5, 4.6] },
+  collaboration: { id: "collaboration", label: "Meeting Pods & War Room", position: [-4.6, 9.4, 16.4], target: [-8.6, 0.5, 7.2] },
+  play: { id: "play", label: "Play & Recharge Lounge", position: [9.6, 9.2, 16.8], target: [6.4, 0.5, 7.6] },
 };
 
-export const CAMERA_PRESET_IDS: CameraPresetId[] = ["overview", "hub", "research", "development", "collaboration"];
+export const CAMERA_PRESET_IDS: CameraPresetId[] = ["overview", "hub", "research", "development", "collaboration", "play"];
 
 export const CAMERA_LIMITS = {
   minDistance: 3.5,

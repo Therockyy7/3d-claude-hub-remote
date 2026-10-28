@@ -3,12 +3,12 @@ import type { WorkflowPhase } from "../tasks/taskTypes.ts";
 import type { LocationId } from "../simulation/worldLayout.ts";
 
 export const AGENTS: AgentProfile[] = [
-  { id: "orion", name: "Orion", role: "orchestrator", roleLabel: "Orchestrator", tagline: "Coordinates work and delegates tasks", color: "#E8B04A", home: "hub", seat: 0 },
-  { id: "iris", name: "Iris", role: "researcher", roleLabel: "Researcher", tagline: "Researches technical topics and gathers information", color: "#5CC8D7", home: "research", seat: 1 },
-  { id: "piper", name: "Piper", role: "product_manager", roleLabel: "Product Manager", tagline: "Converts requirements into actionable tasks", color: "#A78BFA", home: "product", seat: 2 },
-  { id: "kai", name: "Kai", role: "engineer", roleLabel: "Software Engineer", tagline: "Implements software features", color: "#6C9EFF", home: "dev", seat: 3 },
-  { id: "quinn", name: "Quinn", role: "qa", roleLabel: "QA Engineer", tagline: "Tests completed work", color: "#5FD39A", home: "testing", seat: 4 },
-  { id: "rex", name: "Rex", role: "reviewer", roleLabel: "Code Reviewer", tagline: "Reviews implementation quality", color: "#F08A7E", home: "review", seat: 5 },
+  { id: "orion", name: "Nhi", role: "orchestrator", roleLabel: "Orchestrator", tagline: "Coordinates work and delegates tasks", color: "#E8B04A", home: "hub", seat: 0 },
+  { id: "iris", name: "Vũ", role: "researcher", roleLabel: "Researcher", tagline: "Researches technical topics and gathers information", color: "#5CC8D7", home: "research", seat: 1 },
+  { id: "piper", name: "Phúc", role: "product_manager", roleLabel: "Product Manager", tagline: "Converts requirements into actionable tasks", color: "#A78BFA", home: "product", seat: 2 },
+  { id: "kai", name: "Đông", role: "engineer", roleLabel: "Software Engineer", tagline: "Implements software features", color: "#6C9EFF", home: "dev", seat: 3 },
+  { id: "quinn", name: "Giang", role: "qa", roleLabel: "QC Engineer", tagline: "Tests completed work", color: "#5FD39A", home: "testing", seat: 4 },
+  { id: "rex", name: "Học", role: "reviewer", roleLabel: "Code Reviewer", tagline: "Reviews implementation quality", color: "#F08A7E", home: "review", seat: 5 },
 ];
 
 export const AGENT_IDS: AgentId[] = AGENTS.map((a) => a.id);

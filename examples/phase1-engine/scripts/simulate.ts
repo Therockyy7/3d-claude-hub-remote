@@ -9,7 +9,9 @@ import type { AgentEvent } from "../src/events/eventTypes.ts";
 import { DEMO_TASK } from "../src/tasks/taskActions.ts";
 import { HOTFIX_TITLE, MIGRATION_TITLE, SPRINT_TASKS, TASK_BACKLOG, pickRandomTask } from "../src/tasks/taskBacklog.ts";
 import type { Task } from "../src/tasks/taskTypes.ts";
-import { CORRIDOR_Z, route, slotFor } from "../src/simulation/worldLayout.ts";
+import { AgentController } from "../src/agents/AgentController.ts";
+import { DOORS, DOOR_WIDTH, LOCATIONS, MIN_WALKWAY, OBSTACLES, ROBOT_SPAN, WALKWAYS, clearance, distanceTo, route, segmentClearance, slotFor } from "../src/simulation/worldLayout.ts";
+import type { LocationId, Vec2 } from "../src/simulation/worldLayout.ts";
 
 const DT = 1 / SIM_CONFIG.tickHz;
 let failures = 0;
@@ -56,8 +58,71 @@ check("done is terminal", isTerminal("done") && !canTransition("done", "abort"))
 {
   const dev = slotFor("dev", 0).position;
   check("route() to where you already stand is empty", route(dev, dev).length === 0);
-  const r = route(slotFor("research", 0).position, dev);
-  check("route() goes via the corridor", r.length === 3 && r[0]!.z === CORRIDOR_Z && r[1]!.z === CORRIDOR_Z);
+  const slots = (Object.keys(LOCATIONS) as LocationId[]).flatMap((id) => LOCATIONS[id].slots);
+  let ends = true;
+  let closest = Infinity;
+  for (let i = 0; i < slots.length; i++) {
+    for (let j = i + 1; j < slots.length; j++) {
+      const a = slots[i]!;
+      const b = slots[j]!;
+      const r = route(a, b);
+      ends &&= r.at(-1)!.x === b.x && r.at(-1)!.z === b.z;
+      r.forEach((p, k) => (closest = Math.min(closest, segmentClearance(r[k - 1] ?? a, p))));
+    }
+  }
+  check("route() between any two slots ends exactly on the slot", ends);
+  check("route() never brushes furniture or glass: ≥ 0.3 m from every desk, chair, table, sofa, prop, plant and wall", closest >= 0.3, `${closest.toFixed(3)} m`);
+  const from = { x: -3, z: 3 };
+  const to = { x: 3, z: 3 };
+  check("route() along the spine is one straight leg", route(from, to).length === 1);
+  /** Closest the walk `start` → `path` comes to `q`. */
+  const passBy = (start: Vec2, path: Vec2[], q: Vec2) => {
+    let d = Infinity;
+    path.forEach((p, i) => {
+      const a = path[i - 1] ?? start;
+      const n = Math.max(1, Math.ceil(Math.hypot(p.x - a.x, p.z - a.z) / 0.05));
+      for (let k = 0; k <= n; k++) d = Math.min(d, Math.hypot(a.x + ((p.x - a.x) * k) / n - q.x, a.z + ((p.z - a.z) * k) / n - q.z));
+    });
+    return d;
+  };
+  const standing = { x: 0, z: 3 };
+  const around = route(from, to, [standing]);
+  const passes = passBy(from, around, standing);
+  check("route() goes around a robot standing in the way", passes >= 0.6 && around.at(-1)!.x === to.x, `${passes.toFixed(2)} m`);
+
+  // Zoning: walkways wide enough for 2.5 robots and empty, doors a robot fits through, rooms entered by their door.
+  const furnitureIn = (w: { x0: number; x1: number; z0: number; z1: number }) => {
+    let d = Infinity;
+    for (let x = w.x0; x <= w.x1 + 1e-9; x += 0.05) for (let z = w.z0; z <= w.z1 + 1e-9; z += 0.05) for (const o of OBSTACLES) d = Math.min(d, distanceTo(o, x, z));
+    return d;
+  };
+  const narrow = WALKWAYS.filter((w) => Math.min(w.x1 - w.x0, w.z1 - w.z0) < MIN_WALKWAY - 1e-9).map((w) => w.id);
+  check(`every transit path is at least 2.5 robots wide (${MIN_WALKWAY.toFixed(2)} m)`, narrow.length === 0, narrow.join(", "));
+  const blocked = WALKWAYS.filter((w) => furnitureIn(w) < 0).map((w) => w.id);
+  check("no furniture stands on a transit path", blocked.length === 0, blocked.join(", "));
+  const tight = DOORS.filter((d) => clearance(d) < DOOR_WIDTH / 2 - 0.05).map((d) => `${d.room} ${(2 * clearance(d)).toFixed(2)} m`);
+  check(`every room door is open at least ${DOOR_WIDTH - 0.1} m`, tight.length === 0, tight.join(", "));
+  const spine = { x: 0, z: 2.9 };
+  const doorOf = (room: string) => DOORS.find((d) => d.room === room)!;
+  const missed = (["warroom", "collab"] as const).flatMap((id) =>
+    LOCATIONS[id].slots.filter((s) => passBy(spine, route(spine, s), doorOf(id === "warroom" ? "War Room" : "Meeting Pod")) > 0.6).map(() => id),
+  );
+  check("robots enter the War Room and the Meeting Pod through their doors", missed.length === 0, missed.join(", "));
+  let crowd = Infinity;
+  for (let i = 0; i < slots.length; i++) for (let j = i + 1; j < slots.length; j++) crowd = Math.min(crowd, Math.hypot(slots[i]!.x - slots[j]!.x, slots[i]!.z - slots[j]!.z));
+  check(`no two places to stand are closer than the widest robot (${ROBOT_SPAN} m)`, crowd >= ROBOT_SPAN - 1e-9, `${crowd.toFixed(2)} m`);
+
+  // Getting up from the desk chair comes before the first step away from the desk.
+  const kai = AGENTS.find((p) => p.id === "kai")!;
+  const c = new AgentController(kai, { walkSpeed: SIM_CONFIG.walkSpeed, onArrived: () => {}, positionOf: () => ({ x: 0, z: 0 }), faceIfIdle: () => {}, others: () => [] });
+  c.enqueue({ kind: "work", duration: 1, status: "working", activity: "Typing" }, { kind: "move", to: "lounge" });
+  const start = { ...c.state.position };
+  let firstStep = -1;
+  for (let k = 1; k <= 120 && firstStep < 0; k++) {
+    c.step(DT);
+    if (Math.hypot(c.state.position.x - start.x, c.state.position.z - start.z) > 1e-6) firstStep = k * DT;
+  }
+  check("a robot gets up from its desk chair before it walks off", firstStep >= 1 + SIM_CONFIG.gait.standUp - 1e-6, `first step at ${firstStep.toFixed(2)} s`);
 }
 
 // 2 ───────────────────────────────────────────────
@@ -168,7 +233,23 @@ section("6. Backlog + sprint");
   const engine = new SimulationEngine({ now: () => 0 });
   engine.start();
   const ids = SPRINT_TASKS.map((t) => engine.submitTask(t).id);
-  runUntil(engine, () => ids.every((id) => isTerminal(engine.getTask(id)!.phase)), 3000);
+  // Watch how close any two robots come all sprint long (a robot on the last stretch to its own spot excepted).
+  let closest = { d: Infinity, at: "" };
+  const arriving = (a: { position: Vec2; path: Vec2[] }) => a.path.length > 0 && Math.hypot(a.path.at(-1)!.x - a.position.x, a.path.at(-1)!.z - a.position.z) < 0.9;
+  while (!ids.every((id) => isTerminal(engine.getTask(id)!.phase)) && engine.getClock() < 3000) {
+    engine.tick(DT);
+    const agents = engine.snapshot().agents;
+    for (let i = 0; i < agents.length; i++) {
+      for (let j = i + 1; j < agents.length; j++) {
+        const a = agents[i]!;
+        const b = agents[j]!;
+        if (arriving(a) || arriving(b)) continue;
+        const d = Math.hypot(a.position.x - b.position.x, a.position.z - b.position.z);
+        if (d < closest.d) closest = { d, at: `${a.id}–${b.id} at ${engine.getClock().toFixed(1)} s` };
+      }
+    }
+  }
+  check("robots never walk into each other: ≥ 0.6 m apart all sprint long", closest.d >= 0.6, `${closest.d.toFixed(2)} m, ${closest.at}`);
   const tasks = ids.map((id) => engine.getTask(id)!);
   check("8-task sprint terminates", tasks.length === 8 && tasks.every((t) => isTerminal(t.phase)), `at ${engine.getClock().toFixed(0)} s`);
   const hotfix = tasks.find((t) => t.title === HOTFIX_TITLE)!;

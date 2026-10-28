@@ -13,10 +13,10 @@ import { AgentController } from "../agents/AgentController.ts";
 import type { Action } from "../agents/AgentController.ts";
 import type { AgentEvent, AgentEventType, EventSeverity } from "../events/eventTypes.ts";
 import type { AgentBackend, CommLink, LiveSessionSummary, SimulationStatus, WorldSnapshot } from "../integrations/AgentBackend.ts";
-import { EventBus } from "../simulation/EventBus.ts";
+import { EventBus, createRng, rngRange } from "../simulation/EventBus.ts";
 import { SIM_CONFIG } from "../simulation/simulationConfig.ts";
 import { isTerminal } from "../simulation/WorkflowStateMachine.ts";
-import { LOCATIONS } from "../simulation/worldLayout.ts";
+import { LOCATIONS, pickBreak } from "../simulation/worldLayout.ts";
 import type { LocationId } from "../simulation/worldLayout.ts";
 import { PHASE_STATUS } from "../tasks/taskTypes.ts";
 import { slashCommand, typedText } from "./promptText.ts";
@@ -184,6 +184,9 @@ export interface LiveOptions {
   now?: () => number;
   /** Tick on a timer. Tests turn this off and call tick() themselves. */
   autoTick?: boolean;
+  /** Idle robots stroll to the lounge or the collaboration table, and a free robot walks a handoff over. Off by
+   *  default so recorded sessions replay exactly; the server turns it on. */
+  ambient?: boolean;
 }
 
 /** Auto focus leaves a session only after it has been idle (turn ended, or no hook) this long (ms). */
@@ -246,6 +249,11 @@ export class LiveAgentBackend implements AgentBackend {
   private holds = new Map<AgentId, number>();
   private releasedAt = new Map<AgentId, number>();
   private holdSeq = 0;
+  /** Ambient movement (opts.ambient): its random source, when each robot may next stroll, its last walk-over, who is out strolling. */
+  private rng = createRng(SIM_CONFIG.seed);
+  private nextStrollAt = new Map<AgentId, number>();
+  private lastWalkOver = new Map<AgentId, number>();
+  private strolling = new Set<AgentId>();
   private tasks = new Map<string, Task>();
   private taskSeq = 0;
   private sessions = new Map<string, LiveSession>();
@@ -263,16 +271,18 @@ export class LiveAgentBackend implements AgentBackend {
   private opts: Required<LiveOptions>;
 
   constructor(options: LiveOptions = {}) {
-    this.opts = { showPrompts: true, now: Date.now, autoTick: true, ...options };
+    this.opts = { showPrompts: true, now: Date.now, autoTick: true, ambient: false, ...options };
     for (const profile of AGENTS) {
       this.controllers.set(profile.id, new AgentController(profile, {
         walkSpeed: SIM_CONFIG.walkSpeed,
         onArrived: (id, location) => this.emit({ type: "agent.arrived", agentId: id, message: `${getAgent(id).name} arrived at the ${LOCATIONS[location].label}`, feed: false, metadata: { location } }),
         positionOf: (id) => this.ctrl(id).state.position,
         faceIfIdle: () => {},
+        others: (id) => AGENTS.filter((p) => p.id !== id).map((p) => ({ position: this.ctrl(p.id).state.position, walking: this.ctrl(p.id).state.path.length > 0 })),
       }));
       this.releasedAt.set(profile.id, 0);
     }
+    this.resetAmbient();
   }
 
   // ───────────────────────── AgentBackend ─────────────────────────
@@ -310,7 +320,11 @@ export class LiveAgentBackend implements AgentBackend {
     this.links = [];
     this.taskSeq = this.linkSeq = this.eventSeq = 0;
     this.clock = 0;
-    for (const c of this.controllers.values()) c.resetToHome();
+    for (const [id, c] of this.controllers) {
+      c.resetToHome();
+      this.releasedAt.set(id, 0);
+    }
+    this.resetAmbient();
     this.emit({ type: "system.reset", message: "Live view cleared" });
     this.publish();
   }
@@ -606,6 +620,7 @@ export class LiveAgentBackend implements AgentBackend {
       this.unhold(s, prev);
       this.linkFor(s, prev, agent, prev === "orion" ? "assign" : "message");
       this.emit({ type: "agent.message", agentId: prev, targetAgentId: agent, taskId: task?.id, message: activity });
+      if (this.focused(s)) this.walkOver(prev, agent);
     }
     s.holder = agent;
     this.hold(s, agent, ROLES[agent].location, status, activity);
@@ -822,6 +837,64 @@ export class LiveAgentBackend implements AgentBackend {
     this.links.push({ id: `L-${++this.linkSeq}`, from, to, kind, startedAt: this.clock, endsAt: this.clock + SIM_CONFIG.linkDuration });
   }
 
+  private resetAmbient(): void {
+    const { minGap, maxGap } = SIM_CONFIG.liveAmbient;
+    this.rng = createRng(SIM_CONFIG.seed);
+    this.strolling.clear();
+    for (const profile of AGENTS) {
+      this.nextStrollAt.set(profile.id, rngRange(this.rng, minGap, maxGap));
+      this.lastWalkOver.set(profile.id, -Infinity);
+    }
+  }
+
+  /** Idle robots at their desks take turns to stretch their legs; real work clears this the moment it arrives. */
+  private stroll(): void {
+    const { minGap, maxGap, minStay, maxStay, maxStrolling } = SIM_CONFIG.liveAmbient;
+    for (const id of this.strolling) {
+      const c = this.ctrl(id);
+      if (!c.busy || !c.onlyAmbient) this.strolling.delete(id);
+    }
+    for (const profile of AGENTS) {
+      if (this.strolling.size >= maxStrolling) return;
+      const c = this.ctrl(profile.id);
+      if (c.busy || c.state.location !== profile.home) continue;
+      if (this.clock < this.nextStrollAt.get(profile.id)! || this.clock - this.releasedAt.get(profile.id)! < minGap) continue;
+      const taken = AGENTS.filter((p) => p.id !== profile.id).flatMap((p) => {
+        const s = this.ctrl(p.id).state;
+        return s.path.length > 0 ? [s.position, s.path.at(-1)!] : [s.position];
+      });
+      const brk = pickBreak(this.rng(), profile.seat, taken);
+      const stay = rngRange(this.rng, minStay, maxStay);
+      this.nextStrollAt.set(profile.id, this.clock + rngRange(this.rng, minGap, maxGap));
+      if (!brk) continue;
+      const label = LOCATIONS[brk.at].label;
+      this.strolling.add(profile.id);
+      c.enqueue(
+        { kind: "move", to: brk.at, slot: brk.slot, activity: `Stretching legs at the ${label}`, ambient: true },
+        { kind: "call", fn: () => this.emit({ type: "agent.ambient", agentId: profile.id, message: `${profile.name} is at the ${label}`, feed: false, metadata: { location: brk.at } }), ambient: true },
+        { kind: "wait", until: () => false, timeout: stay, activity: brk.activity, ambient: true },
+        { kind: "move", to: profile.home, activity: "Heading back to desk", ambient: true },
+      );
+    }
+  }
+
+  /**
+   * The robot that just handed the session over walks to the new holder's desk, has a word, and heads back. Queued
+   * after whatever it is finishing (an emote), skipped mid-walk or within the cooldown: then only the arc shows.
+   */
+  private walkOver(from: AgentId, to: AgentId): void {
+    const { handoffCooldown, handoffTalk } = SIM_CONFIG.liveAmbient;
+    const c = this.ctrl(from);
+    if (!this.opts.ambient || c.state.path.length > 0 || this.clock - this.lastWalkOver.get(from)! < handoffCooldown) return;
+    this.lastWalkOver.set(from, this.clock);
+    const target = getAgent(to);
+    c.enqueue(
+      { kind: "move", to: ROLES[to].location, slot: 1, activity: `Walking over to ${target.name}`, ambient: true },
+      { kind: "talk", target: to, duration: handoffTalk, activity: `Handing off to ${target.name}`, onStart: () => this.link(from, to, "message"), ambient: true },
+      { kind: "move", to: getAgent(from).home, activity: "Heading back to desk", ambient: true },
+    );
+  }
+
   tick(dt: number): void {
     if (this.status !== "running") return;
     this.clock += dt;
@@ -835,6 +908,7 @@ export class LiveAgentBackend implements AgentBackend {
         c.enqueue({ kind: "move", to: profile.home, activity: "Heading back to desk" });
       }
     }
+    if (this.opts.ambient) this.stroll();
     this.links = this.links.filter((l) => l.endsAt > this.clock);
     this.publish();
   }

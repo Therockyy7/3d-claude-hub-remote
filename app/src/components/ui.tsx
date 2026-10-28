@@ -142,7 +142,7 @@ export function PriorityTag({ priority }: { priority: TaskPriority }) {
 
 export function DemoTag() {
   return (
-    <Pill className="border-signal/40 bg-signal/10 text-signal-strong" title="The scripted demo task: QA fails the first build on purpose">
+    <Pill className="border-signal/40 bg-signal/10 text-signal-strong" title="The scripted demo task: QC fails the first build on purpose">
       DEMO
     </Pill>
   );

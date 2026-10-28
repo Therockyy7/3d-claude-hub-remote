@@ -11,6 +11,7 @@ import { CameraController, cameraFitInfo } from "@/world/CameraController";
 import { InteractionManager } from "@/world/InteractionManager";
 import { Lighting } from "@/world/Lighting";
 import { OfficeEnvironment } from "@/world/OfficeEnvironment";
+import { OfficeProps } from "@/world/OfficeProps";
 import { Workstations } from "@/world/Workstations";
 import { FrameTimerEnd, FrameTimerStart, useRenderCount } from "@/world/perfProbe";
 
@@ -121,6 +122,7 @@ export default function WorldCanvas() {
           <Lighting />
           <OfficeEnvironment />
           <Workstations />
+          <OfficeProps />
           <AgentsLayer />
           <InteractionManager />
           <CameraController />

@@ -84,7 +84,7 @@ export function TaskDetails({ task, onBack }: { task: Task; onBack: () => void }
         <OpenSessionButton taskId={task.id} />
         {task.preferredAgentId ? (
           <p className="text-[11.5px] text-mist-500">
-            Requested from {getAgent(task.preferredAgentId).name}, routed via Orion.
+            Requested from {getAgent(task.preferredAgentId).name}, routed via Nhi.
           </p>
         ) : null}
       </div>
@@ -125,7 +125,7 @@ export function TaskDetails({ task, onBack }: { task: Task; onBack: () => void }
           </div>
           {reworks > 0 ? (
             <p className="flex items-center gap-1.5 text-[12px] text-warn">
-              <RefreshCw size={12} /> Reworked {reworks}× after QA/review feedback
+              <RefreshCw size={12} /> Reworked {reworks}× after QC/review feedback
             </p>
           ) : null}
         </div>

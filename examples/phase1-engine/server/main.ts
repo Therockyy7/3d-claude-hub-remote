@@ -48,7 +48,7 @@ const viewerFile = join(here, "..", "viewer", "dist", "fragment.html");
 let backend: AgentBackend;
 let live: LiveAgentBackend | null = null;
 if (values.source === "claude-code") {
-  live = new LiveAgentBackend({ showPrompts: !values["hide-prompts"] });
+  live = new LiveAgentBackend({ showPrompts: !values["hide-prompts"], ambient: true });
   backend = live;
 } else if (values.source === "sim") {
   backend = new MockAgentBackend();

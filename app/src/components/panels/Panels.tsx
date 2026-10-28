@@ -110,7 +110,7 @@ export function OverviewPanel() {
               <span className="rounded-full border border-warn/30 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warn">Simulated</span>
             </div>
             <p className="text-[12.5px] leading-relaxed text-mist-300">
-              <b className="text-mist-100">Run demo</b> sends one task through the whole team: Orion delegates, Piper plans, Iris researches, Kai builds, Quinn fails the first build, Kai fixes it, and Rex
+              <b className="text-mist-100">Run demo</b> sends one task through the whole team: Nhi delegates, Phúc plans, Vũ researches, Đông builds, Giang fails the first build, Đông fixes it, and Học
               approves.
             </p>
             <ScenarioButtons />
@@ -316,7 +316,6 @@ export function SettingsPanel() {
       </Section>
 
       <Section title="Overlays">
-        <Toggle checked={overlays.paths} onChange={(v) => setOverlays({ paths: v })} label="Walking paths & destinations" hint="Trails from each walking agent to where it is going." />
         <Toggle checked={overlays.speech} onChange={(v) => setOverlays({ speech: v })} label="Agent speech indicators" hint="Bubbles while agents talk, celebrate or hit a problem." />
       </Section>
 
@@ -397,7 +396,7 @@ export function SettingsPanel() {
             [
               ["Max concurrent tasks", SIM_CONFIG.maxConcurrentTasks],
               ["Max iterations", SIM_CONFIG.maxIterations],
-              ["QA fail rate", `${Math.round(SIM_CONFIG.qaFailRate * 100)}%`],
+              ["QC fail rate", `${Math.round(SIM_CONFIG.qaFailRate * 100)}%`],
               ["Review change rate", `${Math.round(SIM_CONFIG.reviewChangeRate * 100)}%`],
               ["Tick rate", `${SIM_CONFIG.tickHz} Hz`],
               ["Walk speed", `${SIM_CONFIG.walkSpeed} m/s`],

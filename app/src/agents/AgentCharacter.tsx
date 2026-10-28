@@ -4,7 +4,7 @@ import { useLayoutEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
-import { AgentAnimator, REDUCED_MOTION } from "@/agents/AgentAnimator";
+import { AgentAnimator, REDUCED_MOTION, interactionFor } from "@/agents/AgentAnimator";
 import type { Pose } from "@/agents/AgentAnimator";
 import { AGENTS } from "@/agents/AgentRegistry";
 import type { AgentProfile, AgentRole } from "@/agents/agentTypes";
@@ -34,8 +34,10 @@ import { useRenderCount } from "@/world/renderCounts";
 
 type V3 = readonly [number, number, number];
 type GeoKey = "soft" | "box" | "limb" | "capsule" | "sphere" | "cyl" | "cone" | "torus" | "arc";
-type MatKey = "shell" | "paint" | "joint" | "visor" | "glow";
-type BoneKey = "body" | "hips" | "lHip" | "lKnee" | "rHip" | "rKnee" | "spine" | "head" | "lShoulder" | "lElbow" | "rShoulder" | "rElbow";
+type MatKey = "shell" | "paint" | "joint" | "visor" | "glow" | "prop";
+/** Things a robot can hold; each shows only while its pose key is above zero. */
+type Prop = "cup" | "book" | "marker" | "can" | "snack" | "plush";
+type BoneKey = "body" | "hips" | "lHip" | "lKnee" | "lAnkle" | "rHip" | "rKnee" | "rAnkle" | "spine" | "head" | "lShoulder" | "lElbow" | "rShoulder" | "rElbow";
 
 interface Part {
   g: GeoKey;
@@ -48,6 +50,10 @@ interface Part {
   k?: number;
   /** Shell tone: limbs use the light tone so the agent colour reads on the torso and head. */
   light?: boolean;
+  /** A held prop: only shown, scaled, while the pose holds it. */
+  prop?: Prop;
+  /** Fixed colour of a prop part. */
+  tint?: string;
 }
 
 const GEOMETRY: Record<GeoKey, () => THREE.BufferGeometry> = {
@@ -70,6 +76,7 @@ const MATERIAL: Record<MatKey, () => THREE.Material> = {
   joint: () => materials.joint(),
   visor: () => sharedMaterial("robot:visor", () => new THREE.MeshStandardMaterial({ color: "#070b12", roughness: 0.1, metalness: 0.7, envMapIntensity: 1.4 })),
   glow: () => sharedMaterial("robot:glow", () => new THREE.MeshBasicMaterial({ color: "#ffffff", toneMapped: false })),
+  prop: () => sharedMaterial("robot:prop", () => new THREE.MeshStandardMaterial({ color: "#ffffff", roughness: 0.5, metalness: 0.05 })),
 };
 
 // ───────────────────────── part lists ─────────────────────────
@@ -90,13 +97,14 @@ function commonParts(rig: RobotRig): Part[] {
   for (const side of ["l", "r"] as const) {
     const hip = `${side}Hip` as BoneKey;
     const knee = `${side}Knee` as BoneKey;
+    const ankle = `${side}Ankle` as BoneKey;
     const sh = `${side}Shoulder` as BoneKey;
     const el = `${side}Elbow` as BoneKey;
     parts.push(
       limb(hip, rig.thigh, 0.085),
       { g: "sphere", m: "joint", b: knee, p: [0, 0, 0], s: [0.125, 0.125, 0.125] },
       limb(knee, rig.shin, 0.078),
-      { g: "soft", m: "paint", b: knee, p: [0, -rig.shin - 0.035, 0.035], s: [0.17, 0.09, 0.28] },
+      { g: "soft", m: "paint", b: ankle, p: [0, -0.035, 0.035], s: [0.17, 0.09, 0.28] },
       { g: "sphere", m: "joint", b: sh, p: [0, 0, 0], s: [0.14, 0.14, 0.14] },
       limb(sh, rig.upperArm, 0.066),
       { g: "sphere", m: "joint", b: el, p: [0, 0, 0], s: [0.1, 0.1, 0.1] },
@@ -104,6 +112,23 @@ function commonParts(rig: RobotRig): Part[] {
       { g: "sphere", m: "joint", b: el, p: [0, -rig.forearm - 0.02, 0], s: [0.11, 0.12, 0.11] },
     );
   }
+  // Held props, made for the pose that holds them (forearm pointing forward and up): a cup of coffee in the right
+  // hand, an open book across both hands, facing the reader.
+  const hand = rig.forearm + 0.03;
+  parts.push(
+    { g: "cyl", m: "prop", b: "rElbow", p: [0, -hand, 0.07], r: [2.1, 0, 0], s: [0.085, 0.11, 0.085], prop: "cup", tint: "#ece6da" },
+    { g: "cyl", m: "prop", b: "rElbow", p: [0, -hand - 0.025, 0.113], r: [2.1, 0, 0], s: [0.07, 0.006, 0.07], prop: "cup", tint: "#3b2416" },
+    { g: "soft", m: "prop", b: "lElbow", p: [0.13, -hand, 0.03], s: [0.32, 0.23, 0.03], prop: "book", tint: "#8c3b36" },
+    { g: "box", m: "prop", b: "lElbow", p: [0.13, -hand, 0.047], s: [0.29, 0.2, 0.01], prop: "book", tint: "#f2efe6" },
+    // A marker held like a pen; a can of soda held like the cup; a snack bar; a plush toy won at the claw machine.
+    { g: "cyl", m: "prop", b: "rElbow", p: [0, -hand - 0.05, 0.03], s: [0.024, 0.15, 0.024], prop: "marker", tint: "#1c64d6" },
+    { g: "cyl", m: "prop", b: "rElbow", p: [0, -hand, 0.07], r: [2.1, 0, 0], s: [0.07, 0.13, 0.07], prop: "can", tint: "#e63946" },
+    { g: "cyl", m: "prop", b: "rElbow", p: [0, -hand - 0.033, 0.126], r: [2.1, 0, 0], s: [0.062, 0.008, 0.062], prop: "can", tint: "#c0c6cc" },
+    { g: "soft", m: "prop", b: "rElbow", p: [0, -hand - 0.03, 0.05], s: [0.05, 0.13, 0.08], prop: "snack", tint: "#ffd166" },
+    { g: "sphere", m: "prop", b: "rElbow", p: [0, -hand - 0.1, 0.03], s: [0.17, 0.16, 0.15], prop: "plush", tint: "#ff8fab" },
+    { g: "sphere", m: "prop", b: "rElbow", p: [-0.055, -hand - 0.18, 0.03], s: [0.06, 0.07, 0.04], prop: "plush", tint: "#ff8fab" },
+    { g: "sphere", m: "prop", b: "rElbow", p: [0.055, -hand - 0.18, 0.03], s: [0.06, 0.07, 0.04], prop: "plush", tint: "#ff8fab" },
+  );
   return parts;
 }
 
@@ -256,6 +281,14 @@ function paintColor(p: AgentProfile): THREE.Color {
   return new THREE.Color().setHSL(hsl.h, Math.min(1, hsl.s * 0.9), hsl.l * 0.72, THREE.SRGBColorSpace);
 }
 
+/** `to − from`, wrapped into (−π, π]. */
+function angleBetween(from: number, to: number): number {
+  let d = (to - from) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d <= -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
 /** Glow level for a status, before the pose's own `glow` multiplier. */
 function statusGlow(status: string, paused: boolean): number {
   if (paused) return 0.28;
@@ -279,6 +312,8 @@ interface RobotBones {
   root: THREE.Object3D;
   bones: Record<BoneKey, THREE.Object3D>;
   animator: AgentAnimator;
+  /** The heading the robot sat down facing: held while it is seated, so getting up never swings the seated body round. */
+  seatFacing: number | null;
 }
 
 function buildBones(profile: AgentProfile, index: number): RobotBones {
@@ -292,6 +327,8 @@ function buildBones(profile: AgentProfile, index: number): RobotBones {
     lKnee: o(),
     rHip: o(),
     rKnee: o(),
+    lAnkle: o(),
+    rAnkle: o(),
     spine: o(),
     head: o(),
     lShoulder: o(),
@@ -310,6 +347,10 @@ function buildBones(profile: AgentProfile, index: number): RobotBones {
   b.rHip.add(b.rKnee);
   b.lKnee.position.y = -rig.thigh;
   b.rKnee.position.y = -rig.thigh;
+  b.lKnee.add(b.lAnkle);
+  b.rKnee.add(b.rAnkle);
+  b.lAnkle.position.y = -rig.shin;
+  b.rAnkle.position.y = -rig.shin;
   b.spine.position.y = rig.hipY + 0.02;
   b.spine.add(b.head, b.lShoulder, b.rShoulder);
   b.head.position.y = rig.headY;
@@ -321,7 +362,8 @@ function buildBones(profile: AgentProfile, index: number): RobotBones {
   b.lElbow.position.y = -rig.upperArm;
   b.rElbow.position.y = -rig.upperArm;
   // Seeds spread over [0, 1) so no two robots breathe or glance in sync.
-  return { profile, rig, root, bones: b, animator: new AgentAnimator(((index * 0.618034) % 1) + 0.05) };
+  const body = { scale: rig.scale, hipHeight: rig.hipY * rig.scale, thigh: rig.thigh * rig.scale, shin: rig.shin * rig.scale };
+  return { profile, rig, root, bones: b, animator: new AgentAnimator(((index * 0.618034) % 1) + 0.05, body), seatFacing: null };
 }
 
 function applyPose(r: RobotBones, p: Pose): void {
@@ -338,6 +380,9 @@ function applyPose(r: RobotBones, p: Pose): void {
   b.rHip.rotation.x = p.rHip;
   b.lKnee.rotation.x = p.lKnee;
   b.rKnee.rotation.x = p.rKnee;
+  // Feet stay level with the floor unless the pose points the toes.
+  b.lAnkle.rotation.x = p.lAnkle - p.lHip - p.lKnee;
+  b.rAnkle.rotation.x = p.rAnkle - p.rHip - p.rKnee;
 }
 
 // ───────────────────────── instanced groups ─────────────────────────
@@ -348,6 +393,10 @@ interface InstanceRef {
   local: THREE.Matrix4;
   k: number;
   light: boolean;
+  prop: Prop | null;
+  tint: string | null;
+  /** Head lights (the eyes) dim when the robot blinks. */
+  eye: boolean;
 }
 
 interface PartGroup {
@@ -380,14 +429,15 @@ function buildGroups(): PartGroup[] {
         tmpQuat.setFromEuler(tmpEuler.set(r[0], r[1], r[2])),
         tmpScale.set(part.s[0], part.s[1], part.s[2]),
       );
-      g.items.push({ robot, bone: part.b, local, k: part.k ?? 1, light: part.light ?? false });
+      g.items.push({ robot, bone: part.b, local, k: part.k ?? 1, light: part.light ?? false, prop: part.prop ?? null, tint: part.tint ?? null, eye: part.m === "glow" && part.b === "head" });
     }
   });
   return [...groups.values()];
 }
 
 /** Static per-instance colour for a group; glow groups are recoloured every frame. */
-function baseColor(mat: MatKey, profile: AgentProfile, light: boolean): THREE.Color | null {
+function baseColor(mat: MatKey, profile: AgentProfile, light: boolean, tint: string | null): THREE.Color | null {
+  if (tint) return new THREE.Color(tint);
   if (mat === "shell") return shellColor(profile, light);
   if (mat === "paint") return paintColor(profile);
   if (mat === "glow") return new THREE.Color(profile.color);
@@ -444,7 +494,7 @@ export function Robots() {
       const mesh = meshes.current[gi];
       if (!mesh) return;
       g.items.forEach((it, i) => {
-        const c = baseColor(g.mat, AGENTS[it.robot]!, it.light);
+        const c = baseColor(g.mat, AGENTS[it.robot]!, it.light, it.tint);
         if (c) mesh.setColorAt(i, c);
         mesh.setMatrixAt(i, hiddenMatrix);
       });
@@ -485,10 +535,19 @@ export function Robots() {
         continue;
       }
       const frozen = d.paused || !running;
-      const pose = r.animator.update(dt, d.status, frozen, d.speed, SIM_CONFIG.walkSpeed, motion);
+      const extra = d.state ? { interaction: interactionFor(d.state), turn: d.turn, accel: d.accel } : undefined;
+      const pose = r.animator.update(dt, d.status, frozen, d.speed, SIM_CONFIG.walkSpeed, motion, extra);
       applyPose(r, pose);
-      r.root.position.set(d.x, 0, d.z);
-      r.root.rotation.y = d.heading;
+      // Seated, the body sits back (or in) along the way the robot sat down facing, and keeps that heading until it
+      // is up again; the shift is applied to the root so it never swings round with a turn.
+      const seatedW = r.animator.seatedWeight;
+      if (seatedW > 0.5 && r.seatFacing === null) r.seatFacing = d.heading;
+      else if (seatedW < 0.02) r.seatFacing = null;
+      const facing = r.seatFacing ?? d.heading;
+      const hold = r.seatFacing === null ? 0 : Math.min(1, seatedW * 1.5);
+      r.root.position.set(d.x + Math.sin(facing) * pose.shiftZ, 0, d.z + Math.cos(facing) * pose.shiftZ);
+      r.root.rotation.y = d.heading + angleBetween(d.heading, facing) * hold;
+      d.deskSeat = r.animator.deskSeat;
       r.root.updateMatrixWorld(true);
       glow[i] = statusGlow(d.status, d.paused) * pose.glow;
     }
@@ -506,8 +565,19 @@ export function Robots() {
           mesh.setMatrixAt(i, hiddenMatrix);
           continue;
         }
-        mesh.setMatrixAt(i, tmpMatrix.multiplyMatrices(r.bones[it.bone].matrixWorld, it.local));
-        if (isGlow) mesh.setColorAt(i, tmpColor.copy(AGENT_COLORS[it.robot]!).multiplyScalar(Math.min(1.6, glow[it.robot]! * it.k)));
+        const pose = r.animator.pose;
+        const shown = it.prop ? pose[it.prop] : 1;
+        if (shown < 0.02) {
+          mesh.setMatrixAt(i, hiddenMatrix);
+          continue;
+        }
+        tmpMatrix.multiplyMatrices(r.bones[it.bone].matrixWorld, it.local);
+        if (it.prop) tmpMatrix.scale(tmpPos.setScalar(shown));
+        mesh.setMatrixAt(i, tmpMatrix);
+        if (isGlow) {
+          const eyes = it.eye ? 1 - 0.85 * pose.blink : 1;
+          mesh.setColorAt(i, tmpColor.copy(AGENT_COLORS[it.robot]!).multiplyScalar(Math.min(1.6, glow[it.robot]! * it.k * eyes)));
+        }
       }
       mesh.instanceMatrix.needsUpdate = true;
       if (isGlow && mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
@@ -524,14 +594,18 @@ export function Robots() {
       if (!d.init) continue;
       const s = r.rig.scale;
       const w = r.animator.weights;
-      tmpPos.set(d.x, 0.011, d.z);
+      // Seated, the body sits back from where the robot stood: its marks go with it.
+      // Floor marks sit under the body, wherever the seat has put it.
+      const mx = r.root.position.x;
+      const mz = r.root.position.z;
+      tmpPos.set(mx, 0.011, mz);
       bl.setMatrixAt(i, tmpMatrix.compose(tmpPos, flatQuat, tmpScale.set(1.35 * s, 1, 1.35 * s)));
 
       // Status ring: agent colour, brighter while working / talking / thinking (the flicker is decoration).
       const busy = w.work * 0.62 + w.talk * (0.5 + 0.12 * motion * Math.sin(t * 9)) + w.think * (0.36 + 0.1 * motion * Math.sin(t * 2.4));
       const ringGoal = d.paused ? 0.06 : 0.2 + busy;
       m.ring = THREE.MathUtils.damp(m.ring, ringGoal, 6, dt);
-      tmpPos.set(d.x, 0.02, d.z);
+      tmpPos.set(mx, 0.02, mz);
       rg.setMatrixAt(i * 3, tmpMatrix.compose(tmpPos, flatQuat, tmpScale.set(0.56 * s, 1, 0.56 * s)));
       rg.setColorAt(i * 3, tmpColor.copy(AGENT_COLORS[i]!).multiplyScalar(m.ring));
 
@@ -539,7 +613,7 @@ export function Robots() {
       const id = r.profile.id;
       const selGoal = st.selectedAgentId === id ? 0.75 : st.hovered === HOVER_KEYS[i] ? 0.5 : 0;
       m.sel = THREE.MathUtils.damp(m.sel, selGoal, 10, dt);
-      tmpPos.set(d.x, 0.022, d.z);
+      tmpPos.set(mx, 0.022, mz);
       const breathe = 1 + Math.sin(t * 3) * 0.02 * motion * (st.selectedAgentId === id ? 1 : 0);
       rg.setMatrixAt(i * 3 + 1, m.sel > 0.005 ? tmpMatrix.compose(tmpPos, flatQuat, tmpScale.set(0.72 * s * breathe, 1, 0.72 * s * breathe)) : hiddenMatrix);
       rg.setColorAt(i * 3 + 1, tmpColor.copy(WHITE).multiplyScalar(m.sel * 0.85));
@@ -556,7 +630,7 @@ export function Robots() {
       const pulses = motion < 1 ? 1 : 2;
       const cycle = m.pulseT < PULSE_SECONDS * pulses ? (m.pulseT % PULSE_SECONDS) / PULSE_SECONDS : 1;
       const strength = m.pulseT < PULSE_SECONDS ? 1 : 0.55;
-      tmpPos.set(d.x, 0.024, d.z);
+      tmpPos.set(mx, 0.024, mz);
       const ps = (0.5 + cycle * (motion < 1 ? 0.6 : 1.25)) * s;
       rg.setMatrixAt(i * 3 + 2, cycle < 1 ? tmpMatrix.compose(tmpPos, flatQuat, tmpScale.set(ps, 1, ps)) : hiddenMatrix);
       rg.setColorAt(i * 3 + 2, tmpColor.copy(m.pulseColor).multiplyScalar((1 - cycle) * strength));

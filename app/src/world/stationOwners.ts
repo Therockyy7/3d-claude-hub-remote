@@ -1,10 +1,10 @@
 import { STATION_OWNERS } from "@/agents/AgentRegistry";
 import type { AgentId } from "@/agents/agentTypes";
-import { LOCATIONS } from "@/simulation/worldLayout";
+import { DESK_SETBACK, LOCATIONS } from "@/simulation/worldLayout";
 import type { Vec2 } from "@/simulation/worldLayout";
 
 /**
- * Desks (§5): each sits 1.2 m behind its stand slot, rotation 0 (monitors face +z, towards the agent).
+ * Desks (§5): each sits `DESK_SETBACK` behind its stand slot, rotation 0 (monitors face +z, towards the agent).
  * The owner only decides whose status lights the desk's screens; it says nothing about where agents live.
  */
 export type StationId = "ops" | "research" | "product" | "dev" | "testing" | "review";
@@ -29,7 +29,7 @@ export const STATIONS: StationDef[] = STATION_IDS.map((id) => {
     id,
     label: LOCATIONS[id].label,
     owner: STATION_OWNERS[id]!,
-    position: { x: slot.x, z: slot.z - 1.2 },
+    position: { x: slot.x, z: slot.z - DESK_SETBACK },
     rotation: 0,
     monitors: MONITORS[id],
   };

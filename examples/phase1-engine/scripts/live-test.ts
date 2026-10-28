@@ -9,7 +9,8 @@ import { WebSocketAgentBackend } from "../src/integrations/WebSocketAgentBackend
 import { startWorldServer } from "../server/worldServer.ts";
 import { createHookRoute } from "../server/hookRoute.ts";
 import { AGENTS } from "../src/agents/AgentRegistry.ts";
-import { slotFor } from "../src/simulation/worldLayout.ts";
+import { BREAK_SPOTS, slotFor } from "../src/simulation/worldLayout.ts";
+import type { LocationId } from "../src/simulation/worldLayout.ts";
 import type { AgentEvent } from "../src/events/eventTypes.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -383,6 +384,89 @@ const agentSig = (live: LiveAgentBackend) => live.snapshot().agents.map((a) => `
     b.location === STATION[bHolder] && b.status !== "idle" && b.activity === classifyTool(bTool.payload.tool_name!, bTool.payload.tool_input, bTool.payload.cwd)!.label &&
     (aHolder === bHolder || a.location === HOME[aHolder]),
     `${b.id}@${b.location}/${b.status}/${b.activity} · ${a.id}@${a.location}`);
+}
+
+// ── ambient movement (the server turns it on): idle strolls and walk-over handoffs ──
+{
+  const DT = 1 / 30;
+  const ticks = (live: LiveAgentBackend, seconds: number, each?: () => void) => {
+    for (let i = 0; i < Math.round(seconds / DT); i++) { live.tick(DT); each?.(); }
+  };
+  const agent = (live: LiveAgentBackend, id: string) => live.snapshot().agents.find((a) => a.id === id)!;
+  const near = (a: { position: { x: number; z: number } }, p: { x: number; z: number }) => Math.hypot(a.position.x - p.x, a.position.z - p.z) < 1e-6;
+  const nameOf = (id: string) => AGENTS.find((a) => a.id === id)!.name;
+  const ON_BREAK = new Set(BREAK_SPOTS.map((b) => b.activity));
+  const STROLLING = { test: (activity: string) => activity.startsWith("Stretching legs") || ON_BREAK.has(activity) };
+  const TRIGGER: Record<string, HookPayload> = {
+    orion: { hook_event_name: "UserPromptSubmit", session_id: "amb", cwd: "/p", prompt: "go" },
+    iris: { hook_event_name: "PreToolUse", session_id: "amb", cwd: "/p", tool_name: "Read", tool_input: { file_path: "/p/a.ts" } },
+    kai: { hook_event_name: "PreToolUse", session_id: "amb", cwd: "/p", tool_name: "Edit", tool_input: { file_path: "/p/a.ts" } },
+    quinn: { hook_event_name: "PreToolUse", session_id: "amb", cwd: "/p", tool_name: "Bash", tool_input: { command: "npm test" } },
+    rex: { hook_event_name: "PreToolUse", session_id: "amb", cwd: "/p", tool_name: "Bash", tool_input: { command: "git diff" } },
+  };
+
+  const quiet = new LiveAgentBackend({ autoTick: false, now: () => 0 });
+  ticks(quiet, 120);
+  check("ambient off (the default): with no hooks the robots stay at their desks for 2 minutes",
+    quiet.snapshot().agents.every((a) => near(a, slotFor(HOME[a.id] as LocationId, 0).position) && a.status === "idle"));
+
+  const idle = new LiveAgentBackend({ autoTick: false, now: () => 0, ambient: true });
+  let t = 0, firstLeave = Infinity, most = 0, visited = false;
+  ticks(idle, 300, () => {
+    t += DT;
+    const away = idle.snapshot().agents.filter((a) => STROLLING.test(a.activity));
+    if (away.length > 0) firstLeave = Math.min(firstLeave, t);
+    most = Math.max(most, away.length);
+    visited ||= away.some((a) => BREAK_SPOTS.some((b) => b.at === a.location));
+  });
+  check("ambient on: nobody strolls in the first 45 s, and someone reaches a break spot (lounge, table, coffee bar, library, arcade, servers) within 5 min",
+    firstLeave >= 45 && visited, `first stroll at ${firstLeave.toFixed(1)} s, visited ${visited}`);
+  check("ambient on: never more than 2 robots strolling at once", most >= 1 && most <= 2, `${most}`);
+
+  const busy = new LiveAgentBackend({ autoTick: false, now: () => 0, ambient: true });
+  let walker: string | undefined;
+  for (let i = 0; i < 30 * 300 && !walker; i++) {
+    busy.tick(DT);
+    walker = busy.snapshot().agents.find((a) => a.id in TRIGGER && ON_BREAK.has(a.activity))?.id;
+  }
+  if (walker) { busy.ingest(TRIGGER[walker]!); ticks(busy, 25); }
+  const w = walker ? agent(busy, walker) : undefined;
+  check("real work ends a stroll: the robot walks back and works at its station",
+    !!w && w.location === STATION[w.id] && near(w, slotFor(STATION[w.id] as LocationId, 0).position) && (w.status === "working" || w.status === "thinking"),
+    w ? `${w.id}@${w.location}/${w.status}` : "nobody took a break");
+
+  const hand = new LiveAgentBackend({ autoTick: false, now: () => 0, ambient: true });
+  const starts: Record<string, number> = {};
+  const last: Record<string, string> = {};
+  let talkedAtResearch = false;
+  const watch = () => {
+    for (const a of hand.snapshot().agents) {
+      if (a.activity.startsWith("Walking over to") && !last[a.id]?.startsWith("Walking over to")) starts[a.id] = (starts[a.id] ?? 0) + 1;
+      last[a.id] = a.activity;
+      if (a.id === "orion" && a.status === "communicating" && a.activity === `Handing off to ${nameOf("iris")}` && near(a, slotFor("research", 1).position)) talkedAtResearch = true;
+    }
+  };
+  hand.ingest(TRIGGER.orion!);
+  ticks(hand, 1, watch);
+  hand.ingest(TRIGGER.iris!);
+  ticks(hand, 0.1, watch);
+  const iris = agent(hand, "iris");
+  check("the robot taking over works at once, at its own desk", iris.status === "working" && near(iris, slotFor("research", 0).position), `${iris.status}`);
+  ticks(hand, 29, watch);
+  const orion = agent(hand, "orion");
+  check("a handoff is walked over: the giver stands beside the new holder's desk, talks, and goes back home",
+    talkedAtResearch && near(orion, slotFor("hub", 0).position) && orion.status === "idle", `talked ${talkedAtResearch}, ${orion.status}@${orion.location}`);
+
+  hand.ingest(TRIGGER.kai!);
+  ticks(hand, 3, watch);
+  hand.ingest(TRIGGER.iris!);
+  ticks(hand, 3, watch);
+  hand.ingest(TRIGGER.kai!);
+  ticks(hand, 3, watch);
+  hand.ingest(TRIGGER.iris!);
+  ticks(hand, 40, watch);
+  check("read/edit back and forth within 30 s: each giver walks over once, then only the arc shows",
+    starts.orion === 1 && starts.iris === 1 && starts.kai === 1, JSON.stringify(starts));
 }
 
 // ── focusSession over the wire: a world command, so no token is needed on loopback when the token guards sessions ──

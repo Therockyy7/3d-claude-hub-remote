@@ -5,7 +5,7 @@ import { ROBOT_RIGS } from "@/agents/robotRigs";
 import { liveWorld } from "@/state/useWorldStore";
 
 /**
- * The displayed (smoothed) root of every robot, shared by the meshes, path trails, comm arcs, hit cylinders
+ * The displayed (smoothed) root of every robot, shared by the meshes, comm arcs, hit cylinders
  * and bubble anchors so they all agree within a frame (§6.4): position damps towards `liveWorld` with λ 12,
  * heading with λ 9, and a jump of more than 4 m (reset, teleport, late join) snaps. Updated at most once per
  * rendered frame, whichever `useFrame` asks first; plain mutable data, never React state.
@@ -17,6 +17,11 @@ export interface AgentDisplay {
   heading: number;
   /** Displayed ground speed, m/s (drives the walk cycle). */
   speed: number;
+  /** Displayed turning rate, rad/s, and ground acceleration, m/s² (lean into turns and starts). */
+  turn: number;
+  accel: number;
+  /** Desk-chair timeline of the robot (0 standing … 1 seated and tucked in): its desk chair follows it. */
+  deskSeat: number;
   status: AgentStatus;
   paused: boolean;
   /** False until the first snapshot placed the robot. */
@@ -37,7 +42,7 @@ export const agentDisplay = new Map<AgentId, AgentDisplay>(
     const rig = ROBOT_RIGS[a.role];
     return [
       a.id,
-      { id: a.id, x: 0, z: 0, heading: 0, speed: 0, status: "idle", paused: false, init: false, scale: rig.scale, chestY: rig.chestY * rig.scale, labelY: rig.labelY * rig.scale, state: null },
+      { id: a.id, x: 0, z: 0, heading: 0, speed: 0, turn: 0, accel: 0, deskSeat: 0, status: "idle", paused: false, init: false, scale: rig.scale, chestY: rig.chestY * rig.scale, labelY: rig.labelY * rig.scale, state: null },
     ];
   }),
 );
@@ -73,6 +78,8 @@ export function updateAgentMotion(key: number, dt: number): void {
       d.z = a.position.z;
       d.heading = a.heading;
       d.speed = 0;
+      d.turn = 0;
+      d.accel = 0;
       d.init = true;
       continue;
     }
@@ -80,10 +87,15 @@ export function updateAgentMotion(key: number, dt: number): void {
     const pz = d.z;
     d.x = THREE.MathUtils.damp(d.x, a.position.x, POSITION_LAMBDA, dt);
     d.z = THREE.MathUtils.damp(d.z, a.position.z, POSITION_LAMBDA, dt);
+    const ph = d.heading;
     d.heading = dampAngle(d.heading, a.heading, HEADING_LAMBDA, dt);
-    const v = Math.hypot(d.x - px, d.z - pz) / Math.max(dt, 1e-3);
+    const step = Math.max(dt, 1e-3);
+    const v = Math.hypot(d.x - px, d.z - pz) / step;
     // Light smoothing: 10 Hz network snapshots otherwise make the stride stutter.
+    const pv = d.speed;
     d.speed = THREE.MathUtils.damp(d.speed, v, 10, dt);
+    d.turn = THREE.MathUtils.damp(d.turn, (d.heading - ph) / step, 8, dt);
+    d.accel = THREE.MathUtils.damp(d.accel, (d.speed - pv) / step, 6, dt);
   }
 }
 

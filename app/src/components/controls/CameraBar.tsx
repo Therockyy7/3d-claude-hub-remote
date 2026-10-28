@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ChevronUp, Crosshair, FlaskConical, LayoutGrid, Network, Users, Video, X } from "lucide-react";
+import { ChevronUp, Crosshair, FlaskConical, Gamepad2, LayoutGrid, Network, Users, Video, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { getAgent } from "@/agents/AgentRegistry";
 import { useWorldStore } from "@/state/useWorldStore";
@@ -15,6 +15,7 @@ const ICONS: Record<CameraPresetId, LucideIcon> = {
   research: FlaskConical,
   development: Crosshair,
   collaboration: Users,
+  play: Gamepad2,
 };
 
 const SHORT: Record<CameraPresetId, string> = {
@@ -22,7 +23,8 @@ const SHORT: Record<CameraPresetId, string> = {
   hub: "Ops Hub",
   research: "Research",
   development: "Development",
-  collaboration: "Collaboration",
+  collaboration: "Meetings",
+  play: "Play",
 };
 
 /**

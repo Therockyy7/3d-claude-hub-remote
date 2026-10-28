@@ -16,6 +16,7 @@
     "test": "node --experimental-strip-types --no-warnings scripts/simulate.ts && npm run test:sound --silent && npm run test:sessions --silent",
     "test:sound": "node --experimental-strip-types --no-warnings scripts/sound-test.ts",
     "test:sessions": "node --experimental-strip-types --no-warnings scripts/sessions-test.ts",
+    "layout:map": "node --experimental-strip-types --no-warnings scripts/layout-map.ts",
     "e2e": "playwright test",
     "build:live": "node --experimental-strip-types --no-warnings scripts/live.ts build",
     "start:live": "node --experimental-strip-types --no-warnings scripts/live.ts start"

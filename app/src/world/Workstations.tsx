@@ -3,28 +3,31 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
+import { deskSeatPhases } from "@/agents/AgentAnimator";
 import { getAgent } from "@/agents/AgentRegistry";
 import type { AgentId, AgentState } from "@/agents/agentTypes";
 import type { LiveWorldState } from "@/integrations/AgentBackend";
 import { PHASE_LABEL } from "@/components/ui";
 import { isTerminal } from "@/simulation/WorkflowStateMachine";
 import { shortTitle } from "@/simulation/workContent";
-import { HUB_CENTER, LOCATIONS, MISSION_CONTROL } from "@/simulation/worldLayout";
+import { HUB_CENTER, LOCATIONS, MISSION_CONTROL, PROPS, deskLayout } from "@/simulation/worldLayout";
 import { liveWorld, useWorldStore } from "@/state/useWorldStore";
 import type { Task } from "@/tasks/taskTypes";
 import { Instanced } from "@/world/Instanced";
 import type { InstanceSpec } from "@/world/Instanced";
 import { canvasTexture, glowTexture, screenTexture, uiFont } from "@/world/proceduralTextures";
 import { geometries, materials, sharedGeometry, sharedMaterial } from "@/world/sharedResources";
+import { agentDisplay } from "@/world/agentMotion";
 import { STATIONS } from "@/world/stationOwners";
 import type { StationDef } from "@/world/stationOwners";
 import { useRenderCount } from "@/world/renderCounts";
 
 /**
- * §6.3. Desks whose screens glow while their owner works, the operations hub, the mission-control wall,
- * the planning board, the collaboration table and the lounge. Furniture repeated across desks is one
- * InstancedMesh per part; only things with their own live state (screens, the hub ring, the two canvas
- * boards) are separate draw calls. Everything live reads `liveWorld` inside `useFrame` and never re-renders.
+ * §6.3. L-shaped desks whose screens glow while their owner works (with an ergonomic chair that rolls in under the
+ * robot while it works), the operations hub, the mission-control wall, the Kanban board and the sofa lounge.
+ * Furniture repeated across desks is one InstancedMesh per part; only things with their own live state (screens,
+ * chairs, the hub ring, the two canvas boards) update per frame. Everything live reads `liveWorld` inside
+ * `useFrame` and never re-renders.
  */
 
 const DESK_TOP_Y = 0.76;
@@ -83,7 +86,13 @@ const MONITOR_Z = -0.2;
 function useDeskParts() {
   return useMemo(() => {
     const slabs: InstanceSpec[] = [];
+    const wings: InstanceSpec[] = [];
     const legs: InstanceSpec[] = [];
+    const laptops: InstanceSpec[] = [];
+    const laptopScreens: InstanceSpec[] = [];
+    const pots: InstanceSpec[] = [];
+    const trunks: InstanceSpec[] = [];
+    const foliage: InstanceSpec[] = [];
     const panels: InstanceSpec[] = [];
     const bezels: InstanceSpec[] = [];
     const stands: InstanceSpec[] = [];
@@ -91,14 +100,33 @@ function useDeskParts() {
     const keyboards: InstanceSpec[] = [];
     const mugs: InstanceSpec[] = [];
     const strips: InstanceSpec[] = [];
-    const seats: InstanceSpec[] = [];
-    const backs: InstanceSpec[] = [];
-    const posts: InstanceSpec[] = [];
-    const bases: InstanceSpec[] = [];
     for (const s of STATIONS) {
       const { x, z } = s.position;
+      const d = deskLayout(s.id);
       slabs.push({ p: [x, DESK_TOP_Y, z] });
-      for (const sx of [-0.98, 0.98]) for (const sz of [-0.4, 0.4]) legs.push({ p: [x + sx, DESK_TOP_Y / 2, z + sz], s: [0.06, DESK_TOP_Y, 0.06] });
+      // The L's return, reaching towards the robot on the outer side, standing on its own two legs at the far end.
+      wings.push({ p: [d.wing.x, DESK_TOP_Y - 0.005, d.wing.z], s: [d.wing.sx, 0.06, d.wing.sz] });
+      for (const sz of [-0.4, 0.4]) legs.push({ p: [x - d.side * 0.98, DESK_TOP_Y / 2, z + sz], s: [0.06, DESK_TOP_Y, 0.06] });
+      for (const sx of [-0.24, 0.24]) legs.push({ p: [d.wing.x + sx, DESK_TOP_Y / 2, d.wing.z + d.wing.sz / 2 - 0.06], s: [0.06, DESK_TOP_Y, 0.06] });
+      legs.push({ p: [x + d.side * 0.98, DESK_TOP_Y / 2, z - 0.4], s: [0.06, DESK_TOP_Y, 0.06] });
+      // A laptop on the return, open towards the chair, and a bonsai at its far end.
+      const turn = -d.side * 0.5;
+      const lx = d.wing.x - d.side * 0.02;
+      const lz = d.wing.z + 0.05;
+      laptops.push({ p: [lx, DESK_TOP_Y + 0.035, lz], r: [0, turn, 0], s: [0.34, 0.016, 0.24] });
+      const [sx2, sz2] = place(lx, lz, turn, 0, -0.12);
+      laptopScreens.push({ p: [sx2, DESK_TOP_Y + 0.15, sz2], r: [-0.25, turn, 0], s: [0.33, 0.22, 0.012] });
+      const bx = d.wing.x + d.side * 0.1;
+      const bz = d.wing.z + d.wing.sz / 2 - 0.2;
+      // Standing on the return, whose top is a centimetre below the main slab's.
+      pots.push({ p: [bx, DESK_TOP_Y + 0.064, bz], s: [0.13, 0.08, 0.13] });
+      trunks.push({ p: [bx + 0.01, DESK_TOP_Y + 0.16, bz], r: [0, 0, 0.35], s: [0.025, 0.14, 0.025] });
+      for (const [fx, fy, fz, k] of [
+        [-0.05, 0.25, 0.0, 0.13],
+        [0.05, 0.27, 0.03, 0.11],
+        [0.0, 0.31, -0.03, 0.09],
+      ] as const)
+        foliage.push({ p: [bx + fx, DESK_TOP_Y + fy, bz + fz], s: [k * 1.3, k * 0.8, k * 1.2], c: fx > 0 ? "#3f8a60" : "#2f7a52" });
       panels.push({ p: [x, 0.47, z - 0.4], s: [1.9, 0.42, 0.025] });
       for (const m of monitorLayout(s.monitors)) {
         const [mx, mz] = place(x + m.dx, z + MONITOR_Z, 0, 0, 0);
@@ -107,19 +135,12 @@ function useDeskParts() {
         stands.push({ p: [px, 0.94, pz], s: [0.04, 0.3, 0.04] });
         feet.push({ p: [px, DESK_TOP_Y + 0.045, pz], r: [0, m.ry, 0], s: [0.24, 0.015, 0.15] });
       }
-      keyboards.push({ p: [x - 0.05, DESK_TOP_Y + 0.045, z + 0.2], s: [0.52, 0.02, 0.17] });
+      // Near the front edge, under the hands of a robot sitting tucked in.
+      keyboards.push({ p: [x - 0.05, DESK_TOP_Y + 0.045, z + 0.33], s: [0.52, 0.02, 0.17] });
       mugs.push({ p: [x + 0.82, DESK_TOP_Y + 0.085, z + 0.22], s: [0.08, 0.1, 0.08] });
       strips.push({ p: [x, DESK_TOP_Y - 0.02, z + 0.477], s: [1.95, 0.012, 0.012], c: getAgent(s.owner).color });
-      // Chair pushed back and turned aside, clear of the stand slot 1.2 m in front of the desk.
-      const cr = 0.55;
-      const [cx, cz] = [x + 0.78, z + 0.72];
-      seats.push({ p: [cx, 0.48, cz], r: [0, cr, 0], s: [0.5, 0.08, 0.48] });
-      const [bx, bz] = place(cx, cz, cr, 0, 0.24);
-      backs.push({ p: [bx, 0.8, bz], r: [-0.12, cr, 0], s: [0.48, 0.52, 0.07] });
-      posts.push({ p: [cx, 0.25, cz], s: [0.06, 0.42, 0.06] });
-      bases.push({ p: [cx, 0.03, cz], s: [0.56, 0.04, 0.56] });
     }
-    return { slabs, legs, panels, bezels, stands, feet, keyboards, mugs, strips, seats, backs, posts, bases };
+    return { slabs, wings, legs, laptops, laptopScreens, pots, trunks, foliage, panels, bezels, stands, feet, keyboards, mugs, strips };
   }, []);
 }
 
@@ -137,10 +158,129 @@ function DeskFurniture() {
       <Instanced geometry={geometries.box()} material={materials.plastic()} items={parts.keyboards} />
       <Instanced geometry={geometries.cylinderLow()} material={materials.ceramic()} items={parts.mugs} />
       <Instanced geometry={geometries.box()} material={strip} items={parts.strips} receiveShadow={false} />
-      <Instanced geometry={geometries.roundedBox()} material={materials.fabric()} items={parts.seats} castShadow />
-      <Instanced geometry={geometries.roundedBox()} material={materials.fabric()} items={parts.backs} castShadow />
-      <Instanced geometry={geometries.cylinderLow()} material={materials.darkMetal()} items={parts.posts} />
-      <Instanced geometry={geometries.cylinder()} material={materials.darkMetal()} items={parts.bases} castShadow />
+      <Instanced geometry={geometries.roundedBox()} material={materials.desk()} items={parts.wings} castShadow />
+      <Instanced geometry={geometries.box()} material={materials.metal()} items={parts.laptops} castShadow />
+      <Instanced geometry={geometries.box()} material={laptopGlow()} items={parts.laptopScreens} receiveShadow={false} />
+      <Instanced geometry={geometries.cylinderLow()} material={materials.ceramic()} items={parts.pots} />
+      <Instanced geometry={geometries.cylinderLow()} material={materials.wood()} items={parts.trunks} />
+      <Instanced geometry={geometries.sphere()} material={materials.instanceWhite()} items={parts.foliage} />
+    </group>
+  );
+}
+
+const laptopGlow = () => sharedMaterial("laptopScreen", () => new THREE.MeshBasicMaterial({ color: "#3b6f8f", toneMapped: false }));
+
+// ───────────────────────── ergonomic chairs ─────────────────────────
+
+type ChairGeo = "box" | "sphere" | "cylinderLow" | "roundedBox";
+type ChairMat = "darkMetal" | "joint" | "metal" | "fabric" | "plastic";
+
+const chairLocal = (p: readonly [number, number, number], s: readonly [number, number, number], r: readonly [number, number, number] = [0, 0, 0]) =>
+  new THREE.Matrix4().compose(new THREE.Vector3(...p), new THREE.Quaternion().setFromEuler(new THREE.Euler(...r)), new THREE.Vector3(...s));
+
+/**
+ * An ergonomic chair in its own frame, the sitter facing −z: five-star base on casters, gas lift, seat, tall mesh
+ * back with a lumbar bar, headrest and arms. Grouped by (geometry, material): one InstancedMesh per group.
+ */
+function chairGroups(): { g: ChairGeo; m: ChairMat; locals: THREE.Matrix4[] }[] {
+  const parts: [ChairGeo, ChairMat, THREE.Matrix4][] = [];
+  for (let k = 0; k < 5; k++) {
+    const a = (k / 5) * Math.PI * 2;
+    parts.push(["box", "darkMetal", chairLocal([Math.sin(a) * 0.15, 0.07, Math.cos(a) * 0.15], [0.05, 0.035, 0.3], [0, a, 0])]);
+    parts.push(["sphere", "joint", chairLocal([Math.sin(a) * 0.3, 0.035, Math.cos(a) * 0.3], [0.06, 0.06, 0.06])]);
+  }
+  parts.push(["cylinderLow", "metal", chairLocal([0, 0.28, 0], [0.05, 0.38, 0.05])]);
+  parts.push(["roundedBox", "fabric", chairLocal([0, 0.5, 0], [0.52, 0.09, 0.5])]);
+  parts.push(["roundedBox", "fabric", chairLocal([0, 0.9, 0.27], [0.48, 0.66, 0.06], [0.16, 0, 0])]);
+  parts.push(["roundedBox", "fabric", chairLocal([0, 1.33, 0.34], [0.3, 0.15, 0.07], [0.16, 0, 0])]);
+  parts.push(["box", "darkMetal", chairLocal([0, 0.75, 0.31], [0.08, 0.42, 0.03], [0.16, 0, 0])]);
+  for (const sx of [-0.28, 0.28]) {
+    parts.push(["box", "darkMetal", chairLocal([sx, 0.63, 0.05], [0.035, 0.22, 0.035])]);
+    parts.push(["roundedBox", "plastic", chairLocal([sx, 0.75, 0.03], [0.08, 0.035, 0.28])]);
+  }
+  const groups = new Map<string, { g: ChairGeo; m: ChairMat; locals: THREE.Matrix4[] }>();
+  for (const [g, m, local] of parts) {
+    const key = `${g}|${m}`;
+    const group = groups.get(key) ?? { g, m, locals: [] };
+    group.locals.push(local);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
+const chairM = new THREE.Matrix4();
+const chairQ = new THREE.Quaternion();
+const chairP = new THREE.Vector3();
+const chairS = new THREE.Vector3(1, 1, 1);
+const chairOut = new THREE.Matrix4();
+
+/**
+ * Where a desk's chair is at a point `q` of its owner's desk-chair timeline (`deskSeatPhases`): parked beside the
+ * desk; pulled straight back, then slid in behind the robot; then scooted in with it once it sits. Getting up retraces
+ * it. The chair never crosses the robot: it moves behind it, and only moves with it once the robot sits on it.
+ */
+function chairAt(id: StationDef["id"], q: number): { x: number; z: number; rot: number } {
+  const d = deskLayout(id);
+  const { pull, scoot } = deskSeatPhases(q);
+  const lerp = THREE.MathUtils.lerp;
+  const back = Math.min(1, pull / 0.4);
+  const across = Math.max(0, (pull - 0.4) / 0.6);
+  let x = lerp(lerp(d.chairParked.x, d.chairAside.x, back), d.chairPulled.x, across);
+  let z = lerp(lerp(d.chairParked.z, d.chairAside.z, back), d.chairPulled.z, across);
+  if (scoot > 0) {
+    x = lerp(d.chairPulled.x, d.chairTucked.x, scoot);
+    z = lerp(d.chairPulled.z, d.chairTucked.z, scoot);
+  }
+  return { x, z, rot: lerp(d.chairParked.rot, 0, pull) };
+}
+
+/**
+ * The six desk chairs. Each follows its owner's desk-chair timeline (published by the robot as `deskSeat`, on the
+ * robot's own animation clock, so a paused world holds both still): pulled out when the robot sits down to work,
+ * scooted in under it, pushed back and parked when it gets up.
+ */
+function DeskChairs() {
+  useRenderCount("DeskChairs");
+  const groups = useMemo(() => chairGroups(), []);
+  const meshes = useRef<(THREE.InstancedMesh | null)[]>([]);
+  const last = useRef(STATIONS.map(() => -1));
+
+  useFrame(() => {
+    let moved = false;
+    STATIONS.forEach((s, i) => {
+      const owner = agentDisplay.get(s.owner);
+      const q = owner?.state?.location === s.id || (owner?.deskSeat ?? 0) > 0 ? (owner?.deskSeat ?? 0) : 0;
+      if (Math.abs(q - last.current[i]!) < 1e-5) return;
+      last.current[i] = q;
+      moved = true;
+      const c = chairAt(s.id, q);
+      chairP.set(c.x, 0, c.z);
+      chairQ.setFromAxisAngle(THREE.Object3D.DEFAULT_UP, c.rot);
+      chairM.compose(chairP, chairQ, chairS);
+      groups.forEach((group, gi) => {
+        const mesh = meshes.current[gi];
+        if (!mesh) return;
+        group.locals.forEach((local, k) => mesh.setMatrixAt(i * group.locals.length + k, chairOut.multiplyMatrices(chairM, local)));
+      });
+    });
+    if (!moved) return;
+    for (const mesh of meshes.current) if (mesh) mesh.instanceMatrix.needsUpdate = true;
+  });
+
+  return (
+    <group name="desk-chairs">
+      {groups.map((group, gi) => (
+        <instancedMesh
+          key={`${group.g}|${group.m}`}
+          ref={(m) => {
+            meshes.current[gi] = m;
+          }}
+          args={[geometries[group.g](), materials[group.m](), group.locals.length * STATIONS.length]}
+          castShadow
+          receiveShadow
+          frustumCulled={false}
+        />
+      ))}
     </group>
   );
 }
@@ -247,6 +387,7 @@ function Desks() {
   return (
     <group name="desks">
       <DeskFurniture />
+      <DeskChairs />
       {STATIONS.map((s) => (
         <group key={s.id}>
           <DeskScreens station={s} />
@@ -497,10 +638,13 @@ function MissionControl() {
 
 // ───────────────────────── planning board ─────────────────────────
 
-const BOARD = { x: -12.6, z: 4.9, y: 1.55, w: 2.9, h: 1.8 };
+/** The Kanban board on the west wall, facing +x. */
+const BOARD = { x: PROPS.kanban.x + 0.06, z: PROPS.kanban.z, y: PROPS.kanban.y, w: PROPS.kanban.w, h: PROPS.kanban.h };
 export const MAX_STICKIES = 24;
-const STICKY_PENDING = "#ffd98a";
+const STICKY_TODO = "#ffd98a";
+const STICKY_DOING = "#ff9fb8";
 const STICKY_DONE = "#9fe3b8";
+const COLUMNS = ["TO DO", "DOING", "DONE"] as const;
 
 /** Latest in-flight task with subtasks, else the latest that had any. */
 function boardTask(tasks: readonly Task[]): Task | null {
@@ -517,7 +661,7 @@ function drawBoard(g: CanvasRenderingContext2D, w: number, h: number, task: Task
   g.font = `700 22px ${font}`;
   g.textAlign = "left";
   g.textBaseline = "alphabetic";
-  g.fillText("PLANNING BOARD", 22, 36);
+  g.fillText("KANBAN BOARD", 22, 36);
   g.font = `500 16px ${font}`;
   g.fillStyle = "#5b6678";
   g.textAlign = "right";
@@ -525,26 +669,30 @@ function drawBoard(g: CanvasRenderingContext2D, w: number, h: number, task: Task
   g.textAlign = "left";
   g.fillStyle = "#c7ced9";
   g.fillRect(22, 50, w - 44, 2);
-  g.fillRect(w / 2 - 1, 62, 2, h - 80);
-  g.fillStyle = "#7c8797";
-  g.font = `600 15px ${font}`;
-  g.fillText("PLANNED", 24, 76);
-  g.fillText("DONE", w / 2 + 14, 76);
+  const tints = ["#f4c95d", "#f27fa0", "#5fc98f"];
+  COLUMNS.forEach((name, c) => {
+    const x0 = 22 + ((w - 44) / 3) * c;
+    if (c > 0) g.fillRect(x0 - 1, 62, 2, h - 80);
+    g.fillStyle = tints[c]!;
+    g.fillRect(x0 + 4, 64, 6, 16);
+    g.fillStyle = "#7c8797";
+    g.font = `600 15px ${font}`;
+    g.fillText(name, x0 + 16, 78);
+    g.fillStyle = "#c7ced9";
+  });
 }
 
-/** Sticky slot (board-local, metres from the board centre; u to the right as seen from the front). */
-function stickySlot(i: number, done: boolean): { u: number; v: number } {
-  const col = i % 3;
-  const row = Math.floor(i / 3);
-  const half = BOARD.w / 2;
-  const u0 = done ? 0.12 : -half + 0.14;
-  return { u: u0 + 0.22 + col * 0.42, v: BOARD.h / 2 - 0.42 - row * 0.32 };
+/** Sticky slot: column `col`, the `k`-th card in it (board-local metres from the centre; u to the right from the front). */
+function stickySlot(col: number, k: number): { u: number; v: number } {
+  const colW = (BOARD.w - 0.2) / 3;
+  const u0 = -BOARD.w / 2 + 0.1 + col * colW;
+  return { u: u0 + 0.28 + (k % 2) * 0.5, v: BOARD.h / 2 - 0.45 - Math.floor(k / 2) * 0.3 };
 }
 
 function PlanningBoard() {
   const cards = useRef<THREE.InstancedMesh>(null);
   const { texture, material } = useMemo(() => {
-    const texture = canvasTexture(640, 400, (g, w, h) => drawBoard(g, w, h, null));
+    const texture = canvasTexture(768, 360, (g, w, h) => drawBoard(g, w, h, null));
     texture.anisotropy = 8;
     const material = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.4, metalness: 0 });
     return { texture, material };
@@ -562,7 +710,7 @@ function PlanningBoard() {
   useLayoutEffect(() => {
     const mesh = cards.current;
     if (!mesh) return;
-    const c = new THREE.Color(STICKY_PENDING);
+    const c = new THREE.Color(STICKY_TODO);
     for (let i = 0; i < MAX_STICKIES; i++) mesh.setColorAt(i, c);
     mesh.count = 0;
   }, []);
@@ -582,7 +730,7 @@ function PlanningBoard() {
     const sig = task ? `${task.id}|${task.title}|${task.subtasks.map((s) => (s.done ? 1 : 0)).join("")}` : "none";
     if (sig === last.current.sig) return;
     last.current.sig = sig;
-    drawBoard(ctx, 640, 400, task);
+    drawBoard(ctx, 768, 360, task);
     map.needsUpdate = true;
     const m4 = new THREE.Matrix4();
     const q = new THREE.Quaternion().setFromAxisAngle(THREE.Object3D.DEFAULT_UP, Math.PI / 2);
@@ -590,17 +738,18 @@ function PlanningBoard() {
     const s = new THREE.Vector3(0.36, 0.26, 0.012);
     const col = new THREE.Color();
     const subtasks = task?.subtasks.slice(0, MAX_STICKIES) ?? [];
-    let pending = 0;
-    let done = 0;
+    // The first open card is the one in progress; the rest wait in TO DO.
+    const doing = subtasks.findIndex((st) => !st.done);
+    const counts = [0, 0, 0];
     subtasks.forEach((st, i) => {
-      const k = st.done ? done++ : pending++;
-      const slot = stickySlot(Math.min(k, 11), st.done);
+      const column = st.done ? 2 : i === doing ? 1 : 0;
+      const slot = stickySlot(column, Math.min(counts[column]++, 7));
       // Board faces +x; its local +u runs towards −z in the world.
       const tilt = ((i * 37) % 7) / 7 - 0.5;
       q.setFromEuler(new THREE.Euler(0, Math.PI / 2, tilt * 0.08));
       p.set(BOARD.x + 0.06, BOARD.y + slot.v, BOARD.z - slot.u);
       mesh.setMatrixAt(i, m4.compose(p, q, s));
-      mesh.setColorAt(i, col.set(st.done ? STICKY_DONE : STICKY_PENDING));
+      mesh.setColorAt(i, col.set(column === 2 ? STICKY_DONE : column === 1 ? STICKY_DOING : STICKY_TODO));
     });
     mesh.count = subtasks.length;
     mesh.instanceMatrix.needsUpdate = true;
@@ -609,10 +758,11 @@ function PlanningBoard() {
 
   const frame = useMemo<InstanceSpec[]>(
     () => [
+      // Hung on the wall: a frame, a marker tray and two wall brackets.
       { p: [BOARD.x - 0.02, BOARD.y, BOARD.z], s: [0.06, BOARD.h + 0.12, BOARD.w + 0.12] },
-      { p: [BOARD.x - 0.02, 0.4, BOARD.z - BOARD.w / 2 + 0.2], s: [0.06, 0.8, 0.06] },
-      { p: [BOARD.x - 0.02, 0.4, BOARD.z + BOARD.w / 2 - 0.2], s: [0.06, 0.8, 0.06] },
       { p: [BOARD.x + 0.1, BOARD.y - BOARD.h / 2 - 0.04, BOARD.z], s: [0.16, 0.03, BOARD.w * 0.9] },
+      { p: [BOARD.x - 0.08, BOARD.y + BOARD.h / 2 - 0.1, BOARD.z - BOARD.w / 2 + 0.3], s: [0.1, 0.06, 0.06] },
+      { p: [BOARD.x - 0.08, BOARD.y + BOARD.h / 2 - 0.1, BOARD.z + BOARD.w / 2 - 0.3], s: [0.1, 0.06, 0.06] },
     ],
     [],
   );
@@ -625,64 +775,61 @@ function PlanningBoard() {
   );
 }
 
-// ───────────────────────── collaboration table + lounge ─────────────────────────
+// ───────────────────────── sofa lounge ─────────────────────────
 
-function ringCenter(id: "collab" | "lounge"): { x: number; z: number } {
+function ringCenter(id: "lounge"): { x: number; z: number } {
   const slots = LOCATIONS[id].slots;
   return slots.reduce((a, s) => ({ x: a.x + s.x / slots.length, z: a.z + s.z / slots.length }), { x: 0, z: 0 });
 }
 
 /** Seat i of a ring, pushed out to `radius`, using the same angles as the stand slots (§5). */
-function ringSeat(id: "collab" | "lounge", i: number, radius: number): { x: number; z: number; angle: number } {
+function ringSeat(id: "lounge", i: number, radius: number): { x: number; z: number; angle: number } {
   const c = ringCenter(id);
   const angle = (i / LOCATIONS[id].slots.length) * Math.PI * 2;
   return { x: c.x + Math.sin(angle) * radius, z: c.z + Math.cos(angle) * radius, angle };
 }
 
-function CollabTable() {
-  const c = ringCenter("collab");
-  const parts = useMemo(() => {
-    const stools: InstanceSpec[] = [];
-    const stoolPosts: InstanceSpec[] = [];
-    for (let i = 0; i < 6; i++) {
-      const s = ringSeat("collab", i, 2.4);
-      stools.push({ p: [s.x, 0.5, s.z], s: [0.44, 0.08, 0.44] });
-      stoolPosts.push({ p: [s.x, 0.25, s.z], s: [0.07, 0.48, 0.07] });
-    }
-    return { stools, stoolPosts };
-  }, []);
-  return (
-    <group name="collab-table">
-      <mesh geometry={geometries.cylinder()} material={materials.wood()} position={[c.x, 0.76, c.z]} scale={[2.1, 0.06, 2.1]} castShadow receiveShadow />
-      <mesh geometry={geometries.cylinder()} material={materials.darkMetal()} position={[c.x, 0.38, c.z]} scale={[0.22, 0.76, 0.22]} castShadow />
-      <mesh geometry={geometries.cylinder()} material={materials.darkMetal()} position={[c.x, 0.02, c.z]} scale={[1.0, 0.04, 1.0]} receiveShadow />
-      <Instanced geometry={geometries.cylinder()} material={materials.fabric()} items={parts.stools} castShadow />
-      <Instanced geometry={geometries.cylinderLow()} material={materials.metal()} items={parts.stoolPosts} />
-    </group>
-  );
-}
+/** Sofa colours round the ring: a cheerful, warm-and-fresh mix. */
+const SOFA_COLORS = ["#d9735b", "#3d9e8f", "#e8b75a", "#6f9fd8", "#c96f9a", "#76b37e"];
+const CUSHION_COLORS = ["#f2e3c6", "#ffd27a", "#f6a6a1", "#bfe3d0", "#ffe9a8", "#cfd8f5"];
 
 function Lounge() {
   const c = ringCenter("lounge");
   const parts = useMemo(() => {
     const seats: InstanceSpec[] = [];
     const backs: InstanceSpec[] = [];
+    const cushions: InstanceSpec[] = [];
+    const flowers: InstanceSpec[] = [];
     for (let i = 0; i < 6; i++) {
       const s = ringSeat("lounge", i, 2.85);
-      seats.push({ p: [s.x, 0.2, s.z], r: [0, s.angle, 0], s: [1.25, 0.36, 0.62] });
+      seats.push({ p: [s.x, 0.2, s.z], r: [0, s.angle, 0], s: [1.25, 0.36, 0.62], c: SOFA_COLORS[i]! });
       const [bx, bz] = place(s.x, s.z, s.angle, 0, 0.3);
-      backs.push({ p: [bx, 0.42, bz], r: [0, s.angle, 0], s: [1.25, 0.5, 0.18] });
+      backs.push({ p: [bx, 0.42, bz], r: [0, s.angle, 0], s: [1.25, 0.5, 0.18], c: SOFA_COLORS[i]! });
+      // Two throw cushions leaning on the back at the ends.
+      for (const u of [-0.42, 0.42]) {
+        const [cx, cz] = place(s.x, s.z, s.angle, u, 0.17);
+        cushions.push({ p: [cx, 0.5, cz], r: [-0.35, s.angle, u * 0.4], s: [0.3, 0.28, 0.1], c: CUSHION_COLORS[(i + (u > 0 ? 1 : 0)) % 6]! });
+      }
     }
-    return { seats, backs };
-  }, []);
-  const rug = sharedMaterial("rug", () => new THREE.MeshStandardMaterial({ color: "#1d2433", roughness: 0.95, metalness: 0 }));
+    // A bunch of flowers in the middle of the coffee table.
+    for (let k = 0; k < 7; k++) {
+      const a = (k / 7) * Math.PI * 2;
+      flowers.push({ p: [c.x + Math.sin(a) * 0.09, 0.66 + (k % 2) * 0.05, c.z + Math.cos(a) * 0.09], s: 0.09, c: ["#ff8fa3", "#ffd166", "#ffffff", "#f78c6b"][k % 4]! });
+    }
+    flowers.push({ p: [c.x, 0.7, c.z], s: 0.08, c: "#ffe066" });
+    return { seats, backs, cushions, flowers };
+  }, [c]);
+  const rug = sharedMaterial("loungeRug", () => new THREE.MeshStandardMaterial({ color: "#2c5560", roughness: 0.95, metalness: 0 }));
   return (
     <group name="lounge">
       <mesh geometry={geometries.disc()} material={rug} position={[c.x, 0.006, c.z]} scale={3.5} receiveShadow />
       <mesh geometry={geometries.cylinder()} material={materials.wood()} position={[c.x, 0.4, c.z]} scale={[1.7, 0.05, 1.7]} castShadow receiveShadow />
       <mesh geometry={geometries.cylinder()} material={materials.darkMetal()} position={[c.x, 0.2, c.z]} scale={[1.2, 0.36, 1.2]} castShadow />
-      <Instanced geometry={geometries.roundedBox()} material={materials.fabricWarm()} items={parts.seats} castShadow />
-      <Instanced geometry={geometries.roundedBox()} material={materials.fabricWarm()} items={parts.backs} castShadow />
+      <mesh geometry={geometries.cylinder()} material={materials.ceramic()} position={[c.x, 0.52, c.z]} scale={[0.16, 0.2, 0.16]} />
+      <Instanced geometry={geometries.roundedBox()} material={materials.instanceWhite()} items={parts.seats} castShadow />
+      <Instanced geometry={geometries.roundedBox()} material={materials.instanceWhite()} items={parts.backs} castShadow />
+      <Instanced geometry={geometries.roundedBox()} material={materials.instanceWhite()} items={parts.cushions} />
+      <Instanced geometry={geometries.sphere()} material={materials.instanceWhite()} items={parts.flowers} />
     </group>
   );
 }
@@ -695,7 +842,6 @@ export function Workstations() {
       <OperationsHub />
       <MissionControl />
       <PlanningBoard />
-      <CollabTable />
       <Lounge />
     </group>
   );

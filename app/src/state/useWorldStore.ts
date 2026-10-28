@@ -28,7 +28,7 @@ export const liveWorld: {
 export type PanelTab = "overview" | "agents" | "tasks" | "activity" | "sessions" | "settings";
 export type Quality = "high" | "low";
 export type QualitySource = "auto" | "user" | "url" | "fallback";
-export type CameraPresetId = "overview" | "hub" | "development" | "research" | "collaboration";
+export type CameraPresetId = "overview" | "hub" | "development" | "research" | "collaboration" | "play";
 
 export interface CameraRequest {
   nonce: number;
@@ -90,7 +90,7 @@ export interface WorldState {
   qualitySource: QualitySource;
   /** `prefers-reduced-motion: reduce`, kept live by AppShell. The 3D layer damps decorative motion with it. */
   reducedMotion: boolean;
-  overlays: { paths: boolean; speech: boolean };
+  overlays: { speech: boolean };
   /** Settings of the current sound mode (simulation or live mirror); each mode is saved separately. */
   sound: SoundSettings;
   soundMode: SoundMode;
@@ -235,7 +235,7 @@ export const useWorldStore = create<WorldState>()((set, get) => ({
   quality: "high",
   qualitySource: "auto",
   reducedMotion: false,
-  overlays: { paths: true, speech: true },
+  overlays: { speech: true },
   sound: defaultSoundSettings("simulation"),
   soundMode: "simulation",
   audioState: "none",

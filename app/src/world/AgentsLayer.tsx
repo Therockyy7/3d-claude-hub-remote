@@ -8,7 +8,7 @@ import { AGENTS, getAgent } from "@/agents/AgentRegistry";
 import type { AgentId } from "@/agents/agentTypes";
 import type { CommLink } from "@/integrations/AgentBackend";
 import { SIM_CONFIG } from "@/simulation/simulationConfig";
-import { liveWorld, useWorldStore } from "@/state/useWorldStore";
+import { liveWorld } from "@/state/useWorldStore";
 import { agentDisplay, liveClock, updateAgentMotion } from "@/world/agentMotion";
 import { selectAgentInWorld, useHitHandlers } from "@/world/InteractionManager";
 import { writeLabelAnchor, labelScale } from "@/world/labelAnchors";
@@ -17,7 +17,7 @@ import { geometries, sharedMaterial } from "@/world/sharedResources";
 import { useRenderCount } from "@/world/renderCounts";
 
 /**
- * §6.4: the agents layer. Robots (instanced, `AgentCharacter.tsx`), their pick cylinders, path trails,
+ * §6.4: the agents layer. Robots (instanced, `AgentCharacter.tsx`), their pick cylinders,
  * comm arcs with packets, and the screen-space anchors for the DOM speech bubbles. Everything per-frame reads
  * `liveWorld` / `agentDisplay` inside `useFrame`; nothing here re-renders React while agents move.
  */
@@ -52,13 +52,7 @@ function AgentHit({ id }: { id: AgentId }) {
   return <mesh ref={ref} geometry={geometries.cylinderLow()} material={hitMaterial()} scale={[1, 2.1, 1]} visible={false} {...handlers} />;
 }
 
-// ───────────────────────── path trails ─────────────────────────
-
-const TRAIL_MAX = 64;
-const TRAIL_SPACING = 0.32;
-/** Metres per second the dots flow towards the destination. */
-const TRAIL_FLOW = 0.8;
-const TRAIL_START = 0.35;
+// ───────────────────────── comm links ─────────────────────────
 
 const additive = (key: string, extra: THREE.MeshBasicMaterialParameters = {}) =>
   sharedMaterial(
@@ -66,122 +60,6 @@ const additive = (key: string, extra: THREE.MeshBasicMaterialParameters = {}) =>
     () => new THREE.MeshBasicMaterial({ color: "#ffffff", transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false, ...extra }),
   );
 
-interface TrailPoint {
-  x: number;
-  z: number;
-  /** Cumulative length along the polyline. */
-  s: number;
-}
-
-function putPoint(pool: TrailPoint[], i: number, x: number, z: number, s: number): void {
-  const q = pool[i] ?? (pool[i] = { x: 0, z: 0, s: 0 });
-  q.x = x;
-  q.z = z;
-  q.s = s;
-}
-
-function PathTrail({ id }: { id: AgentId }) {
-  useRenderCount("PathTrail");
-  const color = useMemo(() => new THREE.Color(getAgent(id).color), [id]);
-  const discs = useRef<THREE.InstancedMesh>(null);
-  const dest = useRef<THREE.Group>(null);
-  const destRing = useRef<THREE.Mesh>(null);
-  const destGlow = useRef<THREE.Mesh>(null);
-  const flow = useRef(0);
-  const pts = useRef<TrailPoint[]>([]);
-
-  useLayoutEffect(() => {
-    const m = discs.current;
-    if (!m) return;
-    for (let i = 0; i < TRAIL_MAX; i++) {
-      m.setMatrixAt(i, hidden);
-      m.setColorAt(i, color);
-    }
-    m.count = 0;
-  }, [color]);
-
-  useFrame((state, rawDt) => {
-    const dt = Math.min(rawDt, 0.1);
-    updateAgentMotion(state.clock.elapsedTime, dt);
-    const m = discs.current;
-    const g = dest.current;
-    if (!m || !g) return;
-    const d = agentDisplay.get(id);
-    const a = d?.state;
-    const show = !!d && !!a && d.init && a.path.length > 0 && useWorldStore.getState().overlays.paths;
-    m.visible = show;
-    g.visible = show;
-    if (!show || !d || !a) return;
-
-    const running = liveWorld.snapshot?.status === "running";
-    const reduced = useWorldStore.getState().reducedMotion;
-    // The flow shows direction, so it stays with reduced motion, at a calmer pace.
-    const flowRate = (running && !a.paused ? 1 : 0.15) * (reduced ? 0.35 : 1);
-    flow.current = (flow.current + dt * TRAIL_FLOW * flowRate) % TRAIL_SPACING;
-
-    // Polyline: the displayed robot, then the remaining waypoints, with cumulative length. The point
-    // objects are pooled across frames.
-    const pool = pts.current;
-    let count = 0;
-    putPoint(pool, count++, d.x, d.z, 0);
-    for (const p of a.path) {
-      const last = pool[count - 1]!;
-      const seg = Math.hypot(p.x - last.x, p.z - last.z);
-      if (seg < 1e-4) continue;
-      putPoint(pool, count++, p.x, p.z, last.s + seg);
-    }
-    const list = pool;
-    const total = list[count - 1]!.s;
-
-    let n = 0;
-    let seg = 1;
-    for (let s = TRAIL_START + flow.current; s < total - 0.3 && n < TRAIL_MAX; s += TRAIL_SPACING) {
-      while (seg < count - 1 && list[seg]!.s < s) seg++;
-      const p0 = list[seg - 1]!;
-      const p1 = list[seg]!;
-      const u = (s - p0.s) / Math.max(1e-4, p1.s - p0.s);
-      const fade = smooth01((s - TRAIL_START) / 0.7) * smooth01((total - 0.3 - s) / 0.9);
-      tmpV.set(p0.x + (p1.x - p0.x) * u, 0.028, p0.z + (p1.z - p0.z) * u);
-      const size = 0.055 + 0.02 * fade;
-      m.setMatrixAt(n, tmpM.compose(tmpV, tmpQ.identity(), tmpS.set(size, 1, size)));
-      m.setColorAt(n, tmpC.copy(color).multiplyScalar(0.25 + 0.75 * fade));
-      n++;
-    }
-    m.count = n;
-    m.instanceMatrix.needsUpdate = true;
-    if (m.instanceColor) m.instanceColor.needsUpdate = true;
-
-    // Destination marker: a ring that breathes, over a soft glow.
-    const end = list[count - 1]!;
-    const t = state.clock.elapsedTime;
-    const breathe = 1 + Math.sin(t * 3.6) * (reduced ? 0 : 0.12);
-    g.position.set(end.x, 0, end.z);
-    destRing.current?.scale.set(0.36 * breathe, 1, 0.36 * breathe);
-    const glow = destGlow.current;
-    if (glow) {
-      glow.scale.set(1.1 * breathe, 1, 1.1 * breathe);
-      ((glow.material as THREE.MeshBasicMaterial).color as THREE.Color).copy(color).multiplyScalar(0.35 + (reduced ? 0 : 0.15 * Math.sin(t * 3.6)));
-    }
-  });
-
-  return (
-    <group name={`trail-${id}`}>
-      <instancedMesh ref={discs} args={[geometries.disc(), additive("trail:dots"), TRAIL_MAX]} frustumCulled={false} visible={false} renderOrder={3} />
-      <group ref={dest} visible={false}>
-        <mesh ref={destRing} geometry={geometries.ring()} material={additive(`trail:dest:${id}`, { color })} position={[0, 0.03, 0]} renderOrder={3} />
-        <mesh
-          ref={destGlow}
-          geometry={geometries.floorPlane()}
-          material={additive(`trail:destGlow:${id}`, { map: glowTexture(), color })}
-          position={[0, 0.026, 0]}
-          renderOrder={3}
-        />
-      </group>
-    </group>
-  );
-}
-
-// ───────────────────────── comm links ─────────────────────────
 
 const LINK_SLOTS = 6;
 const SEGMENTS = 40;
@@ -538,7 +416,7 @@ function agentsDisabled(): boolean {
 
 // ───────────────────────── layer ─────────────────────────
 
-/** The robots, trails and arcs. The bubble anchors are a separate component that must run after the camera. */
+/** The robots and arcs. The bubble anchors are a separate component that must run after the camera. */
 export function AgentsLayer() {
   useRenderCount("AgentsLayer");
   const [disabled] = useState(agentsDisabled);
@@ -548,9 +426,6 @@ export function AgentsLayer() {
       <Robots />
       {AGENTS.map((a) => (
         <AgentHit key={a.id} id={a.id} />
-      ))}
-      {AGENTS.map((a) => (
-        <PathTrail key={a.id} id={a.id} />
       ))}
       <CommLinks />
     </group>
